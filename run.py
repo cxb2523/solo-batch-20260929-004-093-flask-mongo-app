@@ -52,7 +52,10 @@ csp = {
         'https://cdnjs.cloudflare.com'
     ]
 }
-talisman = Talisman(app, content_security_policy=csp)
+talisman = Talisman(
+    app,
+    content_security_policy=csp,
+    force_https=not os.environ.get('DISABLE_FORCE_HTTPS'))
 
 # Create CSRF protect
 csrf = CSRFProtect()
@@ -176,9 +179,12 @@ def send_verification_email():
 @app.route('/profile', methods=['GET'])
 @login_required
 def profile():
-    notes = mongo.db.notes.find(
-        {"user_id": current_user.id, "deleted": False}).sort("timestamp", -1)
-    return render_template('profile.html', notes=notes, title=current_user.title)
+    overview = Note.user_overview(mongo.db.notes, current_user.id)
+    return render_template(
+        'profile.html',
+        notes=overview["notes"],
+        note_count=overview["note_count"],
+        title=current_user.title)
 
 
 # Messages
@@ -187,11 +193,30 @@ def profile():
 def messages():
     all_users = mongo.db.users.find(
         {"id": {"$ne": current_user.id}}, {'_id': 0})
-    inbox_messages = mongo.db.messages.find(
-        {"to_id": current_user.id, "deleted": False}).sort("timestamp", -1)
-    sent_messages = mongo.db.messages.find(
-        {"from_id": current_user.id, "deleted": False, "hidden_for_sender": False}).sort("timestamp", -1)
-    return render_template('messages.html', users=all_users, inbox_messages=inbox_messages, sent_messages=sent_messages)
+    overview = Message.user_overview(mongo.db.messages, current_user.id)
+    return render_template(
+        'messages.html',
+        users=all_users,
+        inbox_messages=overview["inbox_messages"],
+        inbox_count=overview["inbox_count"],
+        sent_messages=overview["sent_messages"],
+        sent_count=overview["sent_count"])
+
+
+# Single message read - same ownership entry point as write / delete
+@app.route('/messages/<message_id>', methods=['GET'])
+@login_required
+def message(message_id):
+    message = Message.get_for_user(mongo.db.messages, message_id, current_user.id)
+    if message is None:
+        abort(404)
+    return {
+        "id": message.get("id"),
+        "title": message.get("title"),
+        "body": message.get("body"),
+        "from_id": message.get("from_id"),
+        "to_id": message.get("to_id"),
+    }
 
 
 # Logout
@@ -224,6 +249,9 @@ def add_note():
 @login_required
 def delete_note():
     note_id = request.form.get("note_id")
+    note = Note.get_for_user(mongo.db.notes, note_id, current_user.id)
+    if note is None:
+        abort(404)
     if mongo.db.notes.update_one({"id": note_id}, {"$set": {"deleted": True}}):
         return "Success! Note deleted"
     else:
@@ -244,8 +272,12 @@ def send_message():
     to_name = to_user.display_name()
     message = Message(title, body, from_id, from_name, to_id, to_name)
     if mongo.db.messages.insert_one(message.dict()):
+        # Same single aggregated result the recipient's /messages page
+        # renders, so the notification email shows the same inbox count.
+        overview = Message.user_overview(mongo.db.messages, to_id)
         send_message_email(from_user=current_user,
-                           to_user=to_user, message=message)
+                           to_user=to_user, message=message,
+                           inbox_count=overview["inbox_count"])
         return "Success! Message sent to " + to_name + ": " + title
     else:
         return "Error! Could not send message"
@@ -256,6 +288,9 @@ def send_message():
 @login_required
 def delete_message():
     message_id = request.form.get("message_id")
+    message = Message.get_for_user(mongo.db.messages, message_id, current_user.id)
+    if message is None:
+        abort(404)
     if mongo.db.messages.update_one({"id": message_id}, {"$set": {"deleted": True}}):
         return "Success! Message deleted"
     else:
@@ -267,6 +302,9 @@ def delete_message():
 @login_required
 def hide_sent_message():
     message_id = request.form.get("message_id")
+    message = Message.get_for_user(mongo.db.messages, message_id, current_user.id)
+    if message is None or message.get("from_id") != current_user.id:
+        abort(404)
     if mongo.db.messages.update_one({"id": message_id}, {"$set": {"hidden_for_sender": True}}):
         return "Success! Message hidden from sender"
     else:
@@ -336,8 +374,9 @@ def is_safe_url(target):
 
 
 # Heroku environment
-if os.environ.get('APP_LOCATION') == 'heroku':
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
-else:
-    app.run(host='localhost', port=8080, debug=True)
+if __name__ == '__main__':
+    if os.environ.get('APP_LOCATION') == 'heroku':
+        port = int(os.environ.get("PORT", 5000))
+        app.run(host="0.0.0.0", port=port)
+    else:
+        app.run(host='localhost', port=8080, debug=True)

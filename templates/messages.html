@@ -3,7 +3,7 @@
 <div class="container">
     <div class="row pt-5">
         <div class="col-lg-8">
-            <h1 class="mb-3">Inbox</h1>
+            <h1 class="mb-3">Inbox <span class="badge badge-secondary">{{ inbox_count or 0 }}</span></h1>
 
             {% for received_message in inbox_messages %}
             <div class="card border border-muted bg-light rounded mb-3">
@@ -32,7 +32,7 @@
         </div>
 
         <div class="col-lg-4">
-            <h1 class="mb-3">Sent messages</h1>
+            <h1 class="mb-3">Sent messages <span class="badge badge-secondary">{{ sent_count or 0 }}</span></h1>
 
             {% for sent_message in sent_messages %}
             <div class="card border border-muted bg-light rounded mb-3">

@@ -40,6 +40,10 @@
                             <td>Unique ID</td>
                             <td>{{ current_user.id }}</td>
                         </tr>
+                        <tr>
+                            <td>Number of notes</td>
+                            <td class="profile-note-count">{{ note_count or 0 }}</td>
+                        </tr>
                     </tbody>
                 </table>
 
@@ -93,7 +97,7 @@
 
         <div class="col-lg-4">
 
-            <h1 class="mb-3 mt-5 mt-lg-0">My notes</h1>
+            <h1 class="mb-3 mt-5 mt-lg-0">My notes <span class="badge badge-secondary profile-note-count">{{ note_count or 0 }}</span></h1>
             {% for note in notes %}
             <div class="card border border-muted bg-light rounded mb-3">
                 <div class="card-body">

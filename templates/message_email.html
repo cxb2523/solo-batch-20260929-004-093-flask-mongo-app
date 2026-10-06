@@ -6,6 +6,7 @@
     <h2>{{ message.title }}</h2>
     <p>{{ message.body }}</p>
     <hr />
+    <p>You have {{ inbox_count or 0 }} message(s) in your inbox.</p>
     <p>Go to the <a href="{{ url_for('messages', _external=True, _scheme='https') }}" title="Messages">messages</a> page to view your messages and reply.</p>
 </body>
 

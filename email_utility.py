@@ -72,9 +72,13 @@ def send_registration_email(user):
 
 
 # Convenience function - message received notification
-def send_message_email(from_user, to_user, message):
+def send_message_email(from_user, to_user, message, inbox_count=0):
     subject = f"{from_user.display_name()} sent you a message"
-    plaintext = f"{to_user.display_name()} sent you this message:\n\n{message.title}\n\n{message.body}"
+    plaintext = (
+        f"{from_user.display_name()} sent you this message:\n\n"
+        f"{message.title}\n\n{message.body}\n\n"
+        f"You now have {inbox_count} message(s) in your inbox.")
     html = render_template(
-        'message_email.html', from_user=from_user, to_user=to_user, message=message)
+        'message_email.html', from_user=from_user, to_user=to_user,
+        message=message, inbox_count=inbox_count)
     send_email(to_user.email, subject, plaintext, html)
