@@ -20,6 +20,7 @@ import os
 from user import User, Anonymous
 from message import Message
 from note import Note
+import queries
 from email_utility import send_email, send_registration_email, send_message_email
 from verification import confirm_token
 
@@ -32,12 +33,19 @@ config = configparser.ConfigParser()
 config.read('configuration.ini')
 default = config['DEFAULT']
 app.secret_key = default['SECRET_KEY']
-app.config['MONGO_DBNAME'] = os.environ.get('MONGO_DBNAME')
-app.config['MONGO_URI'] = os.environ.get('MONGODB_URI') #default['MONGO_URI']
+app.config['MONGO_DBNAME'] = os.environ.get('MONGO_DBNAME') or 'appdb'
+mongo_uri = os.environ.get('MONGODB_URI')
+app.config['MONGO_URI'] = mongo_uri or 'mongodb://localhost:27017/' + app.config['MONGO_DBNAME']
 app.config['PREFERRED_URL_SCHEME'] = "https"
 
 # Create Pymongo
 mongo = PyMongo(app)
+if not mongo_uri:
+    # No database configured: fall back to an in-memory MongoDB so the
+    # app still runs locally (data is lost when the process stops).
+    import mongomock
+    mongo.cx = mongomock.MongoClient()
+    mongo.db = mongo.cx[app.config['MONGO_DBNAME']]
 
 # Create Bcrypt
 bc = Bcrypt(app)
@@ -52,7 +60,8 @@ csp = {
         'https://cdnjs.cloudflare.com'
     ]
 }
-talisman = Talisman(app, content_security_policy=csp)
+talisman = Talisman(app, content_security_policy=csp,
+                    force_https=os.environ.get('APP_LOCATION') == 'heroku')
 
 # Create CSRF protect
 csrf = CSRFProtect()
@@ -176,22 +185,43 @@ def send_verification_email():
 @app.route('/profile', methods=['GET'])
 @login_required
 def profile():
-    notes = mongo.db.notes.find(
-        {"user_id": current_user.id, "deleted": False}).sort("timestamp", -1)
-    return render_template('profile.html', notes=notes, title=current_user.title)
+    notes, notes_total = queries.notes_page(mongo.db, current_user.id)
+    return render_template('profile.html', notes=notes, notes_total=notes_total,
+                           title=current_user.title)
 
 
 # Messages
-@app.route('/messages', methods=['GET'])
+@app.route('/messages', methods=['GET'], strict_slashes=False)
 @login_required
 def messages():
-    all_users = mongo.db.users.find(
-        {"id": {"$ne": current_user.id}}, {'_id': 0})
-    inbox_messages = mongo.db.messages.find(
-        {"to_id": current_user.id, "deleted": False}).sort("timestamp", -1)
-    sent_messages = mongo.db.messages.find(
-        {"from_id": current_user.id, "deleted": False, "hidden_for_sender": False}).sort("timestamp", -1)
-    return render_template('messages.html', users=all_users, inbox_messages=inbox_messages, sent_messages=sent_messages)
+    all_users = queries.other_users(mongo.db, current_user.id)
+    inbox_messages, inbox_total, sent_messages, sent_total = queries.messages_page(
+        mongo.db, current_user.id)
+    return render_template('messages.html', users=all_users,
+                           inbox_messages=inbox_messages, inbox_total=inbox_total,
+                           sent_messages=sent_messages, sent_total=sent_total)
+
+
+# Single note (read goes through the same ownership entry point)
+@app.route('/notes/<note_id>', methods=['GET'])
+@login_required
+def get_note(note_id):
+    note = queries.find_owned_note(mongo.db, note_id, current_user.id)
+    if note is None:
+        abort(404)
+    note.pop('_id', None)
+    return note
+
+
+# Single message (read goes through the same ownership entry point)
+@app.route('/messages/<message_id>', methods=['GET'])
+@login_required
+def get_message(message_id):
+    message = queries.find_accessible_message(mongo.db, message_id, current_user.id)
+    if message is None:
+        abort(404)
+    message.pop('_id', None)
+    return message
 
 
 # Logout
@@ -224,10 +254,11 @@ def add_note():
 @login_required
 def delete_note():
     note_id = request.form.get("note_id")
-    if mongo.db.notes.update_one({"id": note_id}, {"$set": {"deleted": True}}):
-        return "Success! Note deleted"
-    else:
-        return "Error! Could not delete note"
+    note = queries.find_owned_note(mongo.db, note_id, current_user.id)
+    if note is None:
+        abort(404)
+    mongo.db.notes.update_one({"id": note["id"]}, {"$set": {"deleted": True}})
+    return "Success! Note deleted"
 
 
 # Send message
@@ -239,7 +270,9 @@ def send_message():
     from_id = current_user.id
     from_name = current_user.display_name()
     to_id = request.form.get("user")
-    to_user_dict = mongo.db.users.find_one({"id": to_id})
+    to_user_dict = queries.find_user(mongo.db, to_id)
+    if to_user_dict is None:
+        abort(404)
     to_user = User.make_from_dict(to_user_dict)
     to_name = to_user.display_name()
     message = Message(title, body, from_id, from_name, to_id, to_name)
@@ -256,10 +289,11 @@ def send_message():
 @login_required
 def delete_message():
     message_id = request.form.get("message_id")
-    if mongo.db.messages.update_one({"id": message_id}, {"$set": {"deleted": True}}):
-        return "Success! Message deleted"
-    else:
-        return "Error! Could not delete message"
+    message = queries.find_accessible_message(mongo.db, message_id, current_user.id)
+    if message is None:
+        abort(404)
+    mongo.db.messages.update_one({"id": message["id"]}, {"$set": {"deleted": True}})
+    return "Success! Message deleted"
 
 
 # Hide sent message
@@ -267,10 +301,11 @@ def delete_message():
 @login_required
 def hide_sent_message():
     message_id = request.form.get("message_id")
-    if mongo.db.messages.update_one({"id": message_id}, {"$set": {"hidden_for_sender": True}}):
-        return "Success! Message hidden from sender"
-    else:
-        return "Error! Could not hide message"
+    message = queries.find_accessible_message(mongo.db, message_id, current_user.id)
+    if message is None:
+        abort(404)
+    mongo.db.messages.update_one({"id": message["id"]}, {"$set": {"hidden_for_sender": True}})
+    return "Success! Message hidden from sender"
 
 
 # Change Name
@@ -336,8 +371,9 @@ def is_safe_url(target):
 
 
 # Heroku environment
-if os.environ.get('APP_LOCATION') == 'heroku':
-    port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
-else:
-    app.run(host='localhost', port=8080, debug=True)
+if __name__ == '__main__':
+    if os.environ.get('APP_LOCATION') == 'heroku':
+        port = int(os.environ.get("PORT", 5000))
+        app.run(host="0.0.0.0", port=port)
+    else:
+        app.run(host='localhost', port=8080, debug=True)

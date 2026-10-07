@@ -25,6 +25,11 @@ def send_email(receiver_email, subject, plaintext, html):
     SENDER_EMAIL = os.environ.get('SENDER_EMAIL')
     PASSWORD = os.environ.get('EMAIL_PASSWORD')
 
+    if not SMTP_SERVER:
+        # Email is not configured (e.g. local development); skip sending.
+        print("SMTP server not configured; skipping email to " + str(receiver_email))
+        return False
+
     # Message setup
     message = MIMEMultipart("alternative")
     message["Subject"] = subject
@@ -44,6 +49,7 @@ def send_email(receiver_email, subject, plaintext, html):
     context = ssl.create_default_context()
 
     # Try to log in to server and send email
+    server = None
     try:
         server = smtplib.SMTP(SMTP_SERVER, PORT)
         server.ehlo()
@@ -51,13 +57,17 @@ def send_email(receiver_email, subject, plaintext, html):
         server.ehlo()
         server.login(SENDER_EMAIL, PASSWORD)
         server.send_message(message)
+        return True
     except Exception as e:
         # Print error messages to stdout
         print(e)
         return False
     finally:
-        server.quit()
-        return True
+        if server is not None:
+            try:
+                server.quit()
+            except Exception:
+                pass
 
 
 # Convenience function - registration / verification email
